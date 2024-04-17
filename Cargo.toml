@@ -1,0 +1,13 @@
+[package]
+name = "cryptopals-rust"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Cryptopals.com challenges"
+repository = "https://github.com/t-mart/cryptopals-rust"
+keywords = ["cryptopals"]
+categories = ["cryptography"]
+readme = "README.md"
+
+[dependencies]
+openssl = { version = "0.10" }
