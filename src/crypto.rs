@@ -188,17 +188,75 @@ pub(crate) fn break_vigenere(ciphertext: &[u8]) -> VigenereResult {
 
             VigenereResult { key, plaintext }
         })
-        .max_by_key(|result| {
-            corpus.score(&String::from_utf8_lossy(&result.plaintext))
-        })
+        .max_by_key(|result| corpus.score(&String::from_utf8_lossy(&result.plaintext)))
         .unwrap()
 }
 
+/// Decrypt a block of AES-128-ECB encrypted data. `is_last_block` should be `true` if the block is
+/// the last block of the ciphertext -- this is important because it determines if padding should be
+/// removed.
+pub(crate) fn decrypt_aes_128_ecb_block(
+    ciphertext: &[u8],
+    key: &[u8],
+    iv: Option<&[u8]>,
+    is_last_block: bool,
+) -> Vec<u8> {
+    use openssl::symm::{Cipher, Crypter, Mode};
+    let cipher = Cipher::aes_128_ecb();
+
+    // we specifically are not using Crypter's padding and iv support because we want to do it
+    // ourselves because we want to learn!
+    let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, None).unwrap();
+    decrypter.pad(false);
+
+    let mut plaintext_buf = vec![0; ciphertext.len() + cipher.block_size()];
+
+    let mut count = decrypter.update(ciphertext, &mut plaintext_buf).unwrap();
+    count += decrypter.finalize(&mut plaintext_buf[count..]).unwrap();
+    plaintext_buf.truncate(count);
+
+    if let Some(iv) = iv {
+        plaintext_buf = plaintext_buf.xor(iv);
+    }
+
+    if is_last_block {
+        unpad_pkcs7(&plaintext_buf)
+    } else {
+        plaintext_buf
+    }
+}
+
+fn get_last_block_idx(ciphertext_len: usize, block_size: usize) -> usize {
+    (ciphertext_len / block_size - 1) + usize::from(ciphertext_len % block_size != 0)
+}
 
 pub(crate) fn decrypt_aes_128_ecb(ciphertext: &[u8], key: &[u8]) -> Vec<u8> {
-    use openssl::symm::{decrypt, Cipher};
-    let cipher = Cipher::aes_128_ecb();
-    decrypt(cipher, key, None, ciphertext).unwrap()
+    let block_size = 16;
+    let last_block_idx = get_last_block_idx(ciphertext.len(), block_size);
+
+    ciphertext
+        .chunks(block_size)
+        .enumerate()
+        .flat_map(|(block_idx, block)| {
+            decrypt_aes_128_ecb_block(block, key, None, block_idx == last_block_idx)
+        })
+        .collect::<Vec<_>>()
+}
+
+pub(crate) fn decrypt_aes_128_cbc(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let block_size = 16;
+    let last_block_idx = get_last_block_idx(ciphertext.len(), block_size);
+    let mut prev_block = iv;
+    let mut out = Vec::with_capacity(ciphertext.len() + block_size);
+
+    for (block_idx, block) in ciphertext.chunks(block_size).enumerate() {
+        let decrypted =
+            decrypt_aes_128_ecb_block(block, key, Some(prev_block), block_idx == last_block_idx);
+        out.extend_from_slice(&decrypted);
+        prev_block = block;
+    }
+
+    out
 }
 
 pub(crate) fn is_ecb_encrypted(ciphertext: &[u8]) -> bool {
@@ -206,4 +264,32 @@ pub(crate) fn is_ecb_encrypted(ciphertext: &[u8]) -> bool {
     let blocks = ciphertext.chunks_exact(16);
     let unique_blocks = blocks.clone().collect::<HashSet<_>>();
     blocks.len() != unique_blocks.len()
+}
+
+pub(crate) fn pad_pkcs7<B: AsRef<[u8]>>(data: B, block_size: usize) -> Vec<u8> {
+    let data = data.as_ref();
+    let pad_len = block_size - data.len() % block_size;
+    if pad_len == 0 {
+        data.to_vec()
+    } else {
+        let mut padded = Vec::with_capacity(data.len() + pad_len);
+        padded.extend_from_slice(data);
+        #[allow(clippy::cast_possible_truncation)]
+        padded.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        padded
+    }
+}
+
+pub(crate) fn unpad_pkcs7(data: &[u8]) -> Vec<u8> {
+    let pad_len = data.last().unwrap();
+
+    assert!(data.len() >= usize::from(*pad_len));
+
+    let unpadded_len = data.len() - usize::from(*pad_len);
+    assert!(
+        data[unpadded_len..].iter().all(|&b| b == *pad_len),
+        "invalid padding"
+    );
+
+    data[..unpadded_len].to_vec()
 }
