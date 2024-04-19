@@ -10,4 +10,5 @@ categories = ["cryptography"]
 readme = "README.md"
 
 [dependencies]
-openssl = { version = "0.10" }
+openssl = "0.10"
+rand = "0.8.5"

@@ -68,7 +68,7 @@ mod challenges {
         use crate::{
             b64::base64_encode,
             bytes_ext::BytesExt,
-            crypto::{break_vigenere, corpus::Corpus, decrypt_aes_128_ecb, is_ecb_encrypted},
+            crypto::{aes_128, corpus::Corpus, vigenere},
             hex::{hex_decode, hex_encode},
         };
 
@@ -92,8 +92,9 @@ mod challenges {
             let a = hex_decode(a);
             let b = hex_decode(b);
 
-            let xored = a.xor(b);
-            let actual = hex_encode(xored, false);
+            let mut actual = a.clone();
+            actual.xor(b);
+            let actual = hex_encode(actual, false);
 
             assert_eq!(actual, expected);
         }
@@ -131,10 +132,10 @@ mod challenges {
                 "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
             a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f";
 
-            let bytes = input.as_bytes();
-            let xored = bytes.xor_repeating_key(key);
+            let mut bytes = input.as_bytes().to_vec();
+            bytes.xor_repeating_key(key);
 
-            let actual = hex_encode(xored, false);
+            let actual = hex_encode(bytes, false);
             assert_eq!(actual, expected);
         }
 
@@ -146,7 +147,7 @@ mod challenges {
             let expected_plaintext =
                 include_bytes!("../data/set-1-challenge-6-and-7-decrypted.txt");
 
-            let result = break_vigenere(&input);
+            let result = vigenere::crack(&input);
             assert_eq!(result.key, expected_key);
             assert_eq!(result.plaintext, expected_plaintext);
         }
@@ -158,7 +159,7 @@ mod challenges {
             // NOTE: this answer was found after analysis -- the website does not provide it.
             let expected = include_bytes!("../data/set-1-challenge-6-and-7-decrypted.txt");
 
-            let plaintext = decrypt_aes_128_ecb(&input, key);
+            let plaintext = aes_128::decrypt_ecb(&input, key);
 
             assert_eq!(plaintext, expected);
         }
@@ -168,23 +169,30 @@ mod challenges {
             let input = hex_decode_lines_from_file!("../data/set-1-challenge-8.txt");
             let expected_idx = 132;
 
-            let ecb_encrypted_idx = input.iter().position(|ct| is_ecb_encrypted(ct)).unwrap();
+            let ecb_encrypted_idx = input
+                .iter()
+                .position(|ct| aes_128::is_likely_ecb_encrypted(ct))
+                .unwrap();
 
             assert_eq!(ecb_encrypted_idx, expected_idx);
         }
     }
 
     mod set_2 {
-        use crate::crypto::{decrypt_aes_128_cbc, pad_pkcs7};
+        use crate::{
+            b64::base64_decode,
+            crypto::{aes_128, oracle, gen_random_bytes},
+        };
 
         #[test]
         fn challenge_9() {
             let input = b"YELLOW SUBMARINE";
             let expected = b"YELLOW SUBMARINE\x04\x04\x04\x04";
 
-            let padded = pad_pkcs7(input, 20);
+            let mut padded = input.to_vec();
+            aes_128::pad_pkcs7(&mut padded, 20);
 
-            assert_eq!(*padded, *expected);
+            assert_eq!(padded, *expected);
         }
 
         #[test]
@@ -194,9 +202,42 @@ mod challenges {
             let iv = &[0; 16];
 
             let expected = include_bytes!("../data/set-2-challenge-10-decrypted.txt");
-            let plaintext = decrypt_aes_128_cbc(&input, key, iv);
+            let plaintext = aes_128::decrypt_cbc(&input, key, iv);
 
             assert_eq!(plaintext, expected);
+        }
+
+        // this test depends on randomness, and should fail at a rate of 1/2^128
+        #[test]
+        fn challenge_11() {
+            let rounds = 1_000;
+            for _ in 0..rounds {
+                let oracle = oracle::Oracle::new_random();
+                let is_ecb_expected = oracle.is_ecb();
+                let min_prefix_size = 5; // we know this from problem constraints
+                let block_size = 16; // we know this from problem constraints
+
+                let is_ecb_guess = oracle::analyze_if_ecb(&oracle, block_size, min_prefix_size);
+
+                assert_eq!(is_ecb_guess, is_ecb_expected);
+            }
+        }
+
+        #[test]
+        fn challenge_12() {
+            let plaintext_suffix = base64_decode(
+                "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkg\
+                aGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBq\
+                dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUg\
+                YnkK",
+            );
+            let plaintext_suffix = b"Hi there, my na".to_vec();
+            let rand_key = gen_random_bytes(16);
+            let oracle = oracle::Oracle::new_ecb(rand_key, plaintext_suffix.clone());
+
+            let decrypted = oracle::crack_ecb(&oracle);
+
+            assert_eq!(decrypted, plaintext_suffix);
         }
     }
 }
