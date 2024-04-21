@@ -181,7 +181,7 @@ mod challenges {
     mod set_2 {
         use crate::{
             b64::base64_decode,
-            crypto::{aes_128, oracle, gen_random_bytes},
+            crypto::{aes_128, gen_random_bytes, oracle},
         };
 
         #[test]
@@ -212,7 +212,7 @@ mod challenges {
         fn challenge_11() {
             let rounds = 1_000;
             for _ in 0..rounds {
-                let oracle = oracle::Oracle::new_random();
+                let oracle = oracle::AffixingOracle::new_random();
                 let is_ecb_expected = oracle.is_ecb();
                 let min_prefix_size = 5; // we know this from problem constraints
                 let block_size = 16; // we know this from problem constraints
@@ -231,13 +231,63 @@ mod challenges {
                 dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUg\
                 YnkK",
             );
-            let plaintext_suffix = b"Hi there, my na".to_vec();
             let rand_key = gen_random_bytes(16);
-            let oracle = oracle::Oracle::new_ecb(rand_key, plaintext_suffix.clone());
+            let oracle =
+                oracle::AffixingOracle::new_suffixed_ecb(rand_key, plaintext_suffix.clone());
 
-            let decrypted = oracle::crack_ecb(&oracle);
+            let decrypted = oracle::crack_unknown_suffix_ecb(&oracle);
 
             assert_eq!(decrypted, plaintext_suffix);
         }
+
+        #[test]
+        fn challenge_13() {
+            use crate::crypto::ecb_cut_paste::{promote_to_admin, ProfileOracle};
+            let oracle = ProfileOracle::new_random();
+
+            // let profile = promote_to_admin(&oracle);
+            // assert!(profile.is_admin());
+            
+            // I'm stopping here for now.
+        }
     }
+}
+
+/// This is just for fun: encrypt a Tux (Linux mascot) BMP file with AES-128 ECB to demonstrate its
+/// lack of diffusion. This is kind of a famous image (it has been in the "Block Cipher mode of
+/// operation" wikipedia page since 2004 at
+/// <https://en.wikipedia.org/w/index.php?title=Block_cipher_mode_of_operation&oldid=2191923>, and
+/// maybe elsewhere even earlier). Additionally, the [cryptopals challenge
+/// #12](https://cryptopals.com/sets/2/challenges/12) mentions
+///
+/// > Lots of people know that when you encrypt something in ECB mode, you can see penguins through
+/// > it.
+///
+/// BMP was chosen because it (usually?) contains uncompressed contiguous pixel data, which can be
+/// encrypted and still decodable by image viewers. Each pixel is just like 32-bit chunks of [R, G,
+/// B, A]. The image comes from
+/// <https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Tux.svg/405px-Tux.svg.png>. It's been
+/// verified to contain a number of pixels divisible by 16, so the ciphertext output will be
+/// unpadded, and then exported as a 32-bit RGBA BMP with GIMP.
+///
+/// Observation: This could actually be a useful tool for forensic analysis of photographic images.
+/// Regions of identical pixels become easily visible, a possible sign of tampering.
+#[test]
+fn test_tux() {
+    let mut tux = include_bytes!("../data/tux.bmp").to_vec();
+
+    // we just want the pixel data. if we muck with the headers/metadata, image viewers will throw
+    // up. so, here, we inspect the headers to find where the pixel data starts and its length.
+    let pixel_array_start = u32::from_le_bytes((&tux[0xA..0xE]).try_into().unwrap()) as usize;
+    let pixel_data_length = u32::from_le_bytes((&tux[0x22..0x26]).try_into().unwrap()) as usize;
+    dbg!(pixel_array_start, pixel_data_length);
+    let pixel_data = &tux[pixel_array_start..pixel_array_start + pixel_data_length];
+
+    let key = &crate::crypto::gen_random_bytes(16);
+    let ciphertext = crate::crypto::aes_128::encrypt_ecb(pixel_data, key);
+    tux.splice(
+        pixel_array_start..pixel_array_start + pixel_data_length,
+        ciphertext,
+    );
+    std::fs::write("data/tux-aes-128-ecb.bmp", &tux).unwrap();
 }
